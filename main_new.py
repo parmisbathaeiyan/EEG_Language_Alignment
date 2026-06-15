@@ -1,5 +1,6 @@
 import os
 import argparse
+import random
 import pandas as pd
 import numpy as np
 import torch
@@ -47,6 +48,7 @@ def get_args():
     parser.add_argument('--ce_weight', type = float, default = 1, help = 'Please choose the ce loss weight')
     parser.add_argument('--cca_weight', type = float, default = 1, help = 'Please choose the cca loss weight')
     parser.add_argument('--wd_weight', type = float, default = 1, help = 'Please choose the wd loss weight')
+    parser.add_argument('--seed', type = int, default = 42, help = 'Global RNG seed for reproducible split/init')
     # Logging infra (no effect on the learning procedure).
     parser.add_argument('--timestamp', type = str, default = None)
     parser.add_argument('--json_path', type = str, default = None)
@@ -61,6 +63,14 @@ if __name__ == '__main__':
     os.environ['TOKENIZERS_PARALLELISM'] = 'false'
     device = torch.device(args.device)
     print(device)
+
+    # Seed all RNGs before any randomness (the train/val/test split in
+    # shuffle_split_data uses Python's random; model init/shuffling use torch).
+    random.seed(args.seed)
+    np.random.seed(args.seed)
+    torch.manual_seed(args.seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(args.seed)
     
     if args.dataset == 'KEmoCon':
         ###### COMING SOON #####
@@ -134,9 +144,7 @@ if __name__ == '__main__':
                     model = BertModel.from_pretrained("bert-base-uncased")
                     
                 model = model.to(device)
-                
-                torch.manual_seed(2)
-                
+
                 optimizer = ScheduledOptim(
                     Adam(filter(lambda x: x.requires_grad, model.parameters()), 
                          betas = (0.9, 0.98), eps = args.eps, lr = args.lr, weight_decay = args.weight_decay),
