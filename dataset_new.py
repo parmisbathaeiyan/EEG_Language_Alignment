@@ -314,8 +314,10 @@ def shuffle_split_data(eeg_dict):
     for label in label_keys:
         random.shuffle(label_keys[label])
 
+    # Paper uses an 80/10/10 train/val/test split (Hollenstein et al. 2021); the
+    # upstream code used 60/10/30. val/test get the remainder (~10% each).
     label_counts = {label: len(label_keys[label]) for label in label_keys}
-    train_proportion = {label: int(0.6 * count) for label, count in label_counts.items()}
+    train_proportion = {label: int(0.8 * count) for label, count in label_counts.items()}
     val_proportion = {label: int(0.10 * count) for label, count in label_counts.items()}
 
     train_data = {}
