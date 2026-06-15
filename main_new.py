@@ -1,6 +1,7 @@
 import os
 import argparse
 import random
+import pickle
 import pandas as pd
 import numpy as np
 import torch
@@ -51,6 +52,7 @@ def get_args():
     parser.add_argument('--seed', type = int, default = 42, help = 'Global RNG seed for reproducible split/init')
     parser.add_argument('--patience', type = int, default = 20, help = 'Early-stopping patience (epochs)')
     parser.add_argument('--es_delta', type = float, default = 0.01, help = 'Early-stopping min-improvement delta')
+    parser.add_argument('--eeg_cache', type = str, default = None, help = 'Path to cache the processed eeg_dict (skips slow .mat parsing on reruns)')
     # Logging infra (no effect on the learning procedure).
     parser.add_argument('--timestamp', type = str, default = None)
     parser.add_argument('--json_path', type = str, default = None)
@@ -104,8 +106,23 @@ if __name__ == '__main__':
                 sentence_list = sentiment_labels.sentence.tolist()
                 labels_list = sentiment_labels.sentiment_label.tolist()
                 sentence_ids_list = sentiment_labels.sentence_id.tolist()
-                
-                eeg_dict = prepare_sr_eeg_data(sr_eeg_data_path, sentence_list, labels_list, sentence_ids_list, args)
+
+                # Optional disk cache: parsing the 12 .mat files is slow (~minutes).
+                # Cache the processed eeg_dict so reruns skip it. Disabled in dev mode
+                # (partial load) and when --eeg_cache is not set. The cached dict is
+                # built before the (seeded) split, so it does not affect the split.
+                eeg_dict = None
+                if args.eeg_cache and args.dev == 0 and os.path.exists(args.eeg_cache):
+                    print(f'Loading cached eeg_dict from {args.eeg_cache}')
+                    with open(args.eeg_cache, 'rb') as _cf:
+                        eeg_dict = pickle.load(_cf)
+                    print(f'  -> {len(eeg_dict)} sentences from cache')
+                if eeg_dict is None:
+                    eeg_dict = prepare_sr_eeg_data(sr_eeg_data_path, sentence_list, labels_list, sentence_ids_list, args)
+                    if args.eeg_cache and args.dev == 0:
+                        with open(args.eeg_cache, 'wb') as _cf:
+                            pickle.dump(eeg_dict, _cf)
+                        print(f'Cached eeg_dict -> {args.eeg_cache}')
                 
                 eeg_train_split, eeg_val_split, eeg_test_split = shuffle_split_data(eeg_dict)
                 
@@ -117,12 +134,23 @@ if __name__ == '__main__':
                 train_dataset = EEGDataset(train_set, args)
                 val_dataset = EEGDataset(val_set, args)
                 test_dataset = EEGDataset(test_set,args)
-                                
+
+                # Drop the train loader's last batch only if it would be too small
+                # for the CCA eigendecomposition / BatchNorm (needs > 16). Otherwise
+                # keep every sample. e.g. 234 train: batch 32 -> 10 leftover (drop);
+                # batch 64 -> 42 leftover (keep).
+                MIN_LAST_BATCH = 17
+                _rem = len(train_dataset) % args.batch_size
+                _drop_last_train = (_rem != 0) and (_rem < MIN_LAST_BATCH)
+                print(f'train={len(train_dataset)} batch={args.batch_size} '
+                      f'last_batch={_rem if _rem else args.batch_size} '
+                      f'drop_last_train={_drop_last_train}')
+
                 train_loader = DataLoader(
                     dataset=train_dataset,
                     batch_size=args.batch_size,
-                    shuffle=True, 
-                    drop_last = True
+                    shuffle=True,
+                    drop_last = _drop_last_train
                 )
                 val_loader = DataLoader(
                     dataset=val_dataset,
