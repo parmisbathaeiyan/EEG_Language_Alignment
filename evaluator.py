@@ -152,3 +152,11 @@ def inference(test_loader, device, model, total_num, args):
     print('F1_i is : {F1_i}'.format(F1_i=F1_i))
     test_acc = total_correct / total_num
     print('test_acc is : {test_acc}'.format(test_acc=test_acc))
+    return {
+        'test_acc_raw'  : float(test_acc),
+        'test_acc_macro': float(acc_SP),
+        'test_pre'      : [float(x) for x in pre_i],
+        'test_rec'      : [float(x) for x in rec_i],
+        'test_f1'       : [float(x) for x in F1_i],
+        'test_cm'       : cm.tolist(),
+    }

@@ -40,8 +40,10 @@ class cca_loss():
                                                     H2bar.t()) + r2 * torch.eye(o2, device=self.device)
 
         # Workaround !!! USE BATCH > 16
-        [D1, V1] = torch.symeig(SigmaHat11, eigenvectors=True)
-        [D2, V2] = torch.symeig(SigmaHat22, eigenvectors=True)
+        # COMPAT: torch.symeig was removed in PyTorch 1.9+; linalg.eigh is the
+        # documented replacement (same result for symmetric matrices).
+        [D1, V1] = torch.linalg.eigh(SigmaHat11, UPLO="L")
+        [D2, V2] = torch.linalg.eigh(SigmaHat22, UPLO="L")
         
         # Newest way but not debugged
         # [D1, V1] = torch.linalg.eig(SigmaHat11)
@@ -82,7 +84,7 @@ class cca_loss():
    
             trace_TT = torch.matmul(Tval.t(), Tval)
             trace_TT = torch.add(trace_TT, (torch.eye(trace_TT.shape[0])*r1).to(self.device)) 
-            U, V = torch.symeig(trace_TT, eigenvectors=True)
+            U, V = torch.linalg.eigh(trace_TT, UPLO="L")
             U = torch.where(U>eps, U, (torch.ones(U.shape).float()*eps).to(self.device))
             U = U.topk(self.outdim_size)[0]
             corr = torch.sum(torch.sqrt(U))

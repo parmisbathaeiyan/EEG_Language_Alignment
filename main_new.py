@@ -47,6 +47,10 @@ def get_args():
     parser.add_argument('--ce_weight', type = float, default = 1, help = 'Please choose the ce loss weight')
     parser.add_argument('--cca_weight', type = float, default = 1, help = 'Please choose the cca loss weight')
     parser.add_argument('--wd_weight', type = float, default = 1, help = 'Please choose the wd loss weight')
+    # Logging infra (no effect on the learning procedure).
+    parser.add_argument('--timestamp', type = str, default = None)
+    parser.add_argument('--json_path', type = str, default = None)
+    parser.add_argument('--plot_dst',  type = str, default = None)
     return parser.parse_args()
 
 
@@ -146,7 +150,7 @@ if __name__ == '__main__':
                 if args.inference == 1:
                     chkpt_path = os.path.join('baselines', args.checkpoint)
                     print(chkpt_path)
-                    checkpoint = torch.load(chkpt_path, map_location = 'cuda')
+                    checkpoint = torch.load(chkpt_path, map_location = args.device)
                     model.load_state_dict(checkpoint['model'])
                     model = model.to(device)
                     inference(test_loader, device, model, test_dataset.__len__(), args)
@@ -188,10 +192,38 @@ if __name__ == '__main__':
                             break   
                     
                     plot_learning_curve(all_train_acc, all_train_loss, all_val_acc, all_val_loss, all_epochs, args)
-                    checkpoint = torch.load(f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt', map_location = 'cuda')
+                    if args.plot_dst:
+                        import shutil as _shutil
+                        _plot_src = f'lr_curves/learning_curve_{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}.png'
+                        if os.path.exists(_plot_src):
+                            _shutil.copy(_plot_src, args.plot_dst)
+                    checkpoint = torch.load(f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt', map_location = args.device)
                     model.load_state_dict(checkpoint['model'])
                     model = model.to(device)
-                    inference(test_loader, device, model, test_dataset.__len__(), args)    
+                    _test_metrics = inference(test_loader, device, model, test_dataset.__len__(), args)
+
+                    if args.json_path:
+                        _results = {
+                            'run_name'        : os.path.basename(args.json_path),
+                            'timestamp'       : args.timestamp,
+                            'hyperparameters' : vars(args),
+                            'total_epochs_run': len(all_epochs),
+                            'best_val_loss'   : float(min(all_val_loss)),
+                            'best_val_acc'    : float(max(all_val_acc)),
+                            'best_val_epoch'  : int(all_epochs[all_val_loss.index(min(all_val_loss))]),
+                            'test'            : _test_metrics,
+                            'per_epoch'       : [
+                                {'epoch': int(all_epochs[i]),
+                                 'train_loss': float(all_train_loss[i]),
+                                 'train_acc' : float(all_train_acc[i]),
+                                 'val_loss'  : float(all_val_loss[i]),
+                                 'val_acc'   : float(all_val_acc[i])}
+                                for i in range(len(all_epochs))
+                            ],
+                        }
+                        with open(args.json_path, 'w') as _jf:
+                            json.dump(_results, _jf, indent=2)
+                        print(f'JSON saved -> {args.json_path}')
                                         
                     
                     
