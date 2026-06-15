@@ -49,6 +49,8 @@ def get_args():
     parser.add_argument('--cca_weight', type = float, default = 1, help = 'Please choose the cca loss weight')
     parser.add_argument('--wd_weight', type = float, default = 1, help = 'Please choose the wd loss weight')
     parser.add_argument('--seed', type = int, default = 42, help = 'Global RNG seed for reproducible split/init')
+    parser.add_argument('--patience', type = int, default = 20, help = 'Early-stopping patience (epochs)')
+    parser.add_argument('--es_delta', type = float, default = 0.01, help = 'Early-stopping min-improvement delta')
     # Logging infra (no effect on the learning procedure).
     parser.add_argument('--timestamp', type = str, default = None)
     parser.add_argument('--json_path', type = str, default = None)
@@ -193,7 +195,7 @@ if __name__ == '__main__':
                                 torch.save(checkpoint, f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt')
                                 print('    - [Info] The checkpoint file has been updated.')
                             
-                        early_stop = early_stopping(all_val_loss, patience = 10, delta = 0.01)
+                        early_stop = early_stopping(all_val_loss, patience = args.patience, delta = args.es_delta)
                         
                         if early_stop:
                             print('Validation loss has stopped decreasing. Early stopping...')
