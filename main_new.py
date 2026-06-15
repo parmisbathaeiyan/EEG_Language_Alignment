@@ -121,7 +121,7 @@ if __name__ == '__main__':
                     dataset=test_dataset,
                     batch_size=args.batch_size,
                     shuffle=False,
-                    drop_last = True
+                    drop_last = False
                 )
                 
                 if args.model == 'transformer':
@@ -181,7 +181,7 @@ if __name__ == '__main__':
                         all_epochs.append(epoch)
                         
                         
-                        if val_loss <= max(all_val_loss):
+                        if val_loss <= min(all_val_loss):
                                 torch.save(checkpoint, f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt')
                                 print('    - [Info] The checkpoint file has been updated.')
                             
