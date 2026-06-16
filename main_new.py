@@ -8,7 +8,7 @@ import torch
 import torch.nn as nn
 from torch.optim import Adam
 import json
-from torch.utils.data import DataLoader
+from torch.utils.data import DataLoader, WeightedRandomSampler
 import time
 from transformers import BertModel, BertTokenizer
 
@@ -52,6 +52,7 @@ def get_args():
     parser.add_argument('--seed', type = int, default = 42, help = 'Global RNG seed for reproducible split/init')
     parser.add_argument('--patience', type = int, default = 20, help = 'Early-stopping patience (epochs)')
     parser.add_argument('--es_delta', type = float, default = 0.01, help = 'Early-stopping min-improvement delta')
+    parser.add_argument('--oversample', type = int, default = 0, help = 'Balance classes per batch via WeightedRandomSampler (paper App C.3); 1 to enable (off by default = faithful upstream)')
     parser.add_argument('--eeg_cache', type = str, default = None, help = 'Path to cache the processed eeg_dict (skips slow .mat parsing on reruns)')
     # Logging infra (no effect on the learning procedure).
     parser.add_argument('--timestamp', type = str, default = None)
@@ -146,12 +147,28 @@ if __name__ == '__main__':
                       f'last_batch={_rem if _rem else args.batch_size} '
                       f'drop_last_train={_drop_last_train}')
 
-                train_loader = DataLoader(
-                    dataset=train_dataset,
-                    batch_size=args.batch_size,
-                    shuffle=True,
-                    drop_last = _drop_last_train
-                )
+                if args.oversample:
+                    # Paper App C.3: oversample so each batch is class-balanced.
+                    # Weight each sample by 1/freq(its class); draw with replacement.
+                    _labels = [int(train_set[i]['label']) for i in range(len(train_dataset))]
+                    _class_count = np.bincount(_labels, minlength=class_num)
+                    _class_w = 1.0 / np.maximum(_class_count, 1)
+                    _sample_w = [float(_class_w[l]) for l in _labels]
+                    _sampler = WeightedRandomSampler(_sample_w, num_samples=len(train_dataset), replacement=True)
+                    print(f'oversampling ON: train class counts {_class_count.tolist()} -> balanced batches')
+                    train_loader = DataLoader(
+                        dataset=train_dataset,
+                        batch_size=args.batch_size,
+                        sampler=_sampler,
+                        drop_last = _drop_last_train
+                    )
+                else:
+                    train_loader = DataLoader(
+                        dataset=train_dataset,
+                        batch_size=args.batch_size,
+                        shuffle=True,
+                        drop_last = _drop_last_train
+                    )
                 val_loader = DataLoader(
                     dataset=val_dataset,
                     batch_size=args.batch_size,
