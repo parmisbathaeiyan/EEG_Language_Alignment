@@ -179,22 +179,20 @@ class SDPAttention(nn.Module):
         self.temperature = temperature
         self.dropout = nn.Dropout(attn_dropout)
 
-        self.softmax = nn.Softmax(dim=0)
-
-
-        self.BN = nn.BatchNorm1d(d_feature)
+        # Paper App B.2: Attention = softmax(QK^T / sqrt(d_k)) V, i.e. the softmax is
+        # over the key dimension. attn is (n_head*batch, len_q, len_k), so that is dim=-1.
+        # (Upstream used dim=0, normalising across the batch, and inserted a BatchNorm over
+        # the score matrix that the paper does not describe -- removed here.)
+        self.softmax = nn.Softmax(dim=-1)
 
     def forward(self, q, k, v, mask=None):
         attn = torch.bmm(q, k.transpose(1, 2))
 
         attn = attn / self.temperature
 
-
         if mask is not None:
+            attn = attn.masked_fill(mask, -1e9)
 
-            attn = attn.masked_fill(mask, 0)
-
-        attn = self.BN(attn)
         attn = self.softmax(attn)
         attn = self.dropout(attn)
         output = torch.bmm(attn, v)
