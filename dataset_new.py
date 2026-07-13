@@ -242,12 +242,20 @@ class EEGDataset(Dataset):
     def __init__(self, data, args):
         self.data = data
         self.args = args
-        if self.args.text_llm == 'bert':
-            self.bert = BertModel.from_pretrained('bert-base-uncased')
-        elif self.args.text_llm == 'seqbert':
-          self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased')
-          
-        self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
+        self.bert = None
+        self.tokenizer = None
+
+        # EEG-only experiments never consume sentence embeddings. Upstream still
+        # constructed three BERT instances (train/val/test) and recomputed a BERT
+        # embedding for every EEG sample in every epoch. Skip that unrelated work;
+        # this does not change EEG features, labels, batches, loss, or predictions.
+        if self.args.modality != 'eeg':
+            if self.args.text_llm == 'bert':
+                self.bert = BertModel.from_pretrained('bert-base-uncased')
+            elif self.args.text_llm == 'seqbert':
+                self.bert = BertForSequenceClassification.from_pretrained('bert-base-uncased')
+
+            self.tokenizer = BertTokenizer.from_pretrained('bert-base-uncased')
 
     def __len__(self):
         return len(self.data)
@@ -270,12 +278,9 @@ class EEGDataset(Dataset):
       
     def __getitem__(self, idx):
         item = self.data[idx]
-        if self.args.model == 'transformer':
-          embeddings = self.__getembed__(item['sentence'])
-        
+
         sample = {
             'label': torch.tensor(item['label'], dtype=torch.long),
-            'sentence': embeddings,
             # 'a1': item['a1'],
             # 'a2': item['a2'],
             # 't1': item['t1'],
@@ -288,6 +293,9 @@ class EEGDataset(Dataset):
               item['b1'], item['b2'], item['g1'], item['g2']]), dtype=torch.float32)
         }
         assert sample['seq'].shape == (832,)
+
+        if self.args.modality != 'eeg':
+            sample['sentence'] = self.__getembed__(item['sentence'])
 
         return sample
 
