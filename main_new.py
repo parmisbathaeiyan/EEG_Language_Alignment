@@ -16,7 +16,7 @@ from config import EEG_LEN, TEXT_LEN, d_model, d_inner, d_k, d_v, class_num, dro
 from optim_new import ScheduledOptim, early_stopping
 from trainer import train
 from evaluator import eval, inference
-from model_new import Transformer
+from model_new import MLP, Transformer
 from utils import open_file
 from new_plot import plot_learning_curve
 from dataset_new import prepare_sr_eeg_data, EEGDataset, clean_dic, shuffle_split_data
@@ -45,6 +45,9 @@ def get_args():
     parser.add_argument('--num_layers', type = int, default = 1, help = 'Please choose how many layers the encoder should have')
     parser.add_argument('--num_heads', type = int, default = 1, help = 'Please choose how many heads the encoder should have')
     parser.add_argument('--dropout', type= float, default = 0.3, help = 'Please indicate the dropout proportion')
+    parser.add_argument('--mlp_hidden_sizes', type=int, nargs=3, default=[256, 128, 64],
+                        metavar=('H1', 'H2', 'H3'),
+                        help='Hidden widths for the released three-hidden-layer MLP')
     parser.add_argument('--text_llm', type=str, default = 'bert', help = 'Please choose which LLM to encode text')
     parser.add_argument('--ce_weight', type = float, default = 1, help = 'Please choose the ce loss weight')
     parser.add_argument('--cca_weight', type = float, default = 1, help = 'Please choose the cca loss weight')
@@ -186,9 +189,18 @@ if __name__ == '__main__':
                                             d_model = d_model, d_inner = d_inner, n_layers = args.num_layers, \
                                             n_head=args.num_heads, d_k = d_k, d_v = d_v, dropout= dropout, \
                                             class_num = class_num, args = args)
+                elif args.model == 'MLP':
+                    layer2, layer3, layer4 = args.mlp_hidden_sizes
+                    print(f'MLP hidden sizes: {layer2} -> {layer3} -> {layer4}; '
+                          f'dropout={args.dropout}')
+                    model = MLP(d_feature_text=TEXT_LEN, d_feature_eeg=EEG_LEN,
+                                layer2=layer2, layer3=layer3, layer4=layer4,
+                                class_num=class_num, dropout=args.dropout, args=args)
                 elif args.model == 'bert':
                     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
                     model = BertModel.from_pretrained("bert-base-uncased")
+                else:
+                    raise ValueError(f'Model {args.model!r} is not wired for this training path')
                     
                 model = model.to(device)
 
