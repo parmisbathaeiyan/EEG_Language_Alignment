@@ -1,11 +1,14 @@
 import os
 import argparse
+import platform
 import random
 import pickle
+import subprocess
 import pandas as pd
 import numpy as np
 import torch
 import torch.nn as nn
+import transformers
 from torch.optim import Adam
 import json
 from torch.utils.data import DataLoader, WeightedRandomSampler
@@ -79,6 +82,14 @@ if __name__ == '__main__':
     torch.manual_seed(args.seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(args.seed)
+
+    try:
+        git_commit = subprocess.check_output(
+            ['git', 'rev-parse', 'HEAD'], text=True
+        ).strip()
+    except (OSError, subprocess.CalledProcessError):
+        git_commit = 'unknown'
+    print(f'code commit: {git_commit}')
     
     if args.dataset == 'KEmoCon':
         ###### COMING SOON #####
@@ -133,6 +144,20 @@ if __name__ == '__main__':
                 train_set, train_id_mapping = clean_dic(eeg_train_split)
                 val_set, val_id_mapping = clean_dic(eeg_val_split)
                 test_set, test_id_mapping = clean_dic(eeg_test_split)
+
+                def _split_summary(items):
+                    labels = [int(item['label']) for item in items]
+                    return {
+                        'size': len(items),
+                        'class_counts': np.bincount(labels, minlength=class_num).tolist(),
+                    }
+
+                split_metadata = {
+                    'train': _split_summary(train_set),
+                    'validation': _split_summary(val_set),
+                    'test': _split_summary(test_set),
+                }
+                print(f'data splits: {split_metadata}')
                 
                 
                 train_dataset = EEGDataset(train_set, args)
@@ -184,11 +209,28 @@ if __name__ == '__main__':
                     drop_last = False
                 )
                 
+                if args.modality == 'eeg':
+                    effective_input_features = {'eeg': EEG_LEN}
+                elif args.modality == 'text':
+                    effective_input_features = {'text': TEXT_LEN}
+                else:
+                    effective_input_features = {'eeg': EEG_LEN, 'text': TEXT_LEN}
+
                 if args.model == 'transformer':
                     model = Transformer(device = device, d_feature_text = TEXT_LEN, d_feature_eeg = EEG_LEN,\
                                             d_model = d_model, d_inner = d_inner, n_layers = args.num_layers, \
                                             n_head=args.num_heads, d_k = d_k, d_v = d_v, dropout= dropout, \
                                             class_num = class_num, args = args)
+                    effective_model_config = {
+                        'class': 'Transformer',
+                        'input_features': effective_input_features,
+                        'd_model': d_model,
+                        'd_inner': d_inner,
+                        'num_layers': args.num_layers,
+                        'num_heads': args.num_heads,
+                        'dropout': dropout,
+                        'num_classes': class_num,
+                    }
                 elif args.model == 'MLP':
                     layer2, layer3, layer4 = args.mlp_hidden_sizes
                     print(f'MLP hidden sizes: {layer2} -> {layer3} -> {layer4}; '
@@ -196,14 +238,37 @@ if __name__ == '__main__':
                     model = MLP(d_feature_text=TEXT_LEN, d_feature_eeg=EEG_LEN,
                                 layer2=layer2, layer3=layer3, layer4=layer4,
                                 class_num=class_num, dropout=args.dropout, args=args)
+                    effective_model_config = {
+                        'class': 'MLP',
+                        'input_features': effective_input_features,
+                        'hidden_sizes': [layer2, layer3, layer4],
+                        'hidden_linear_layers': 3,
+                        'dropout': args.dropout,
+                        'num_classes': class_num,
+                    }
                 elif args.model == 'bert':
                     tokenizer = BertTokenizer.from_pretrained("bert-base-uncased")
                     model = BertModel.from_pretrained("bert-base-uncased")
+                    effective_model_config = {
+                        'class': 'BertModel',
+                        'pretrained_name': 'bert-base-uncased',
+                    }
                 else:
                     raise ValueError(f'Model {args.model!r} is not wired for this training path')
                     
                 model = model.to(device)
 
+                optimizer_metadata = {
+                    'optimizer': 'Adam',
+                    'betas': [0.9, 0.98],
+                    'eps': args.eps,
+                    'weight_decay': args.weight_decay,
+                    'schedule': 'Vaswani inverse-square-root with linear warmup',
+                    'schedule_d_model': d_model,
+                    'warmup_steps': args.warm_steps,
+                    'note': 'ScheduledOptim overwrites the Adam constructor learning rate each step',
+                }
+                print(f'effective optimizer: {optimizer_metadata}')
                 optimizer = ScheduledOptim(
                     Adam(filter(lambda x: x.requires_grad, model.parameters()), 
                          betas = (0.9, 0.98), eps = args.eps, lr = args.lr, weight_decay = args.weight_decay),
@@ -273,7 +338,18 @@ if __name__ == '__main__':
                         _results = {
                             'run_name'        : os.path.basename(args.json_path),
                             'timestamp'       : args.timestamp,
+                            'code_commit'     : git_commit,
                             'hyperparameters' : vars(args),
+                            'effective_model' : effective_model_config,
+                            'effective_optimizer': optimizer_metadata,
+                            'data_splits'     : split_metadata,
+                            'runtime'         : {
+                                'python': platform.python_version(),
+                                'torch': torch.__version__,
+                                'transformers': transformers.__version__,
+                                'cuda_device': (torch.cuda.get_device_name(0)
+                                                if torch.cuda.is_available() else None),
+                            },
                             'total_epochs_run': len(all_epochs),
                             'best_val_loss'   : float(min(all_val_loss)),
                             'best_val_acc'    : float(max(all_val_acc)),
