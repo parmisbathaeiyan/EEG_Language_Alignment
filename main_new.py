@@ -149,7 +149,10 @@ if __name__ == '__main__':
                 test_set, test_id_mapping = clean_dic(eeg_test_split)
 
                 def _split_summary(items):
-                    labels = [int(item['label']) for item in items]
+                    # clean_dic returns {integer_index: sample_dict}; iterating a
+                    # dict directly yields the integer keys, not the samples.
+                    records = items.values() if isinstance(items, dict) else items
+                    labels = [int(item['label']) for item in records]
                     return {
                         'size': len(items),
                         'class_counts': np.bincount(labels, minlength=class_num).tolist(),
