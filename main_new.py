@@ -40,6 +40,8 @@ def get_args():
                         default='scheduled_adam',
                         help='Use the released Transformer schedule or constant-LR Adam')
     parser.add_argument('--eps', type = float, default = 1e-4)
+    parser.add_argument('--adam_beta1', type=float, default=0.9)
+    parser.add_argument('--adam_beta2', type=float, default=0.98)
     parser.add_argument('--weight_decay', type = float, default = 1e-2)
     parser.add_argument('--warm_steps', type = int, default = 2000)
     parser.add_argument('--epochs', type = int, default = 200)
@@ -265,12 +267,13 @@ if __name__ == '__main__':
                 model = model.to(device)
 
                 adam = Adam(filter(lambda x: x.requires_grad, model.parameters()),
-                            betas=(0.9, 0.98), eps=args.eps, lr=args.lr,
+                            betas=(args.adam_beta1, args.adam_beta2),
+                            eps=args.eps, lr=args.lr,
                             weight_decay=args.weight_decay)
                 if args.optimizer_type == 'scheduled_adam':
                     optimizer_metadata = {
                         'optimizer': 'Adam',
-                        'betas': [0.9, 0.98],
+                        'betas': [args.adam_beta1, args.adam_beta2],
                         'eps': args.eps,
                         'weight_decay': args.weight_decay,
                         'schedule': 'Vaswani inverse-square-root with linear warmup',
@@ -285,7 +288,7 @@ if __name__ == '__main__':
                 else:
                     optimizer_metadata = {
                         'optimizer': 'Adam',
-                        'betas': [0.9, 0.98],
+                        'betas': [args.adam_beta1, args.adam_beta2],
                         'eps': args.eps,
                         'weight_decay': args.weight_decay,
                         'schedule': None,
