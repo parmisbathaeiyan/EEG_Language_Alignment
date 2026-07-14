@@ -235,6 +235,74 @@ class MLP(nn.Module):
             out_fusion = self.l4_fusion(concat_feat)
             
             return out_fusion
+
+
+class ConfigurableMLP(nn.Module):
+    """MLP used for explicit architecture diagnostics.
+
+    The released ``MLP`` above is intentionally left unchanged. This class makes
+    hidden depth and Linear-layer bias explicit so paper/code ambiguities can be
+    tested without silently rewriting the authors' surviving implementation.
+    """
+
+    def __init__(self, d_feature_text, d_feature_eeg, hidden_sizes,
+                 class_num, dropout, args, use_bias=False):
+        super().__init__()
+        if not hidden_sizes:
+            raise ValueError('ConfigurableMLP requires at least one hidden layer')
+
+        self.args = args
+        self.hidden_sizes = list(hidden_sizes)
+        self.use_bias = bool(use_bias)
+        self.relu = nn.ReLU()
+        self.dropout = nn.Dropout(dropout)
+
+        if args.modality in ('text', 'fusion'):
+            self.text_layers = self._make_hidden_layers(d_feature_text)
+        if args.modality in ('eeg', 'fusion'):
+            self.eeg_layers = self._make_hidden_layers(d_feature_eeg)
+
+        final_width = self.hidden_sizes[-1]
+        if args.modality == 'text':
+            self.text_classifier = nn.Linear(
+                final_width, class_num, bias=self.use_bias
+            )
+        elif args.modality == 'eeg':
+            self.eeg_classifier = nn.Linear(
+                final_width, class_num, bias=self.use_bias
+            )
+        elif args.modality == 'fusion':
+            self.fusion_classifier = nn.Linear(
+                final_width * 2, class_num, bias=self.use_bias
+            )
+
+    def _make_hidden_layers(self, input_width):
+        layers = nn.ModuleList()
+        for output_width in self.hidden_sizes:
+            layers.append(nn.Linear(
+                input_width, output_width, bias=self.use_bias
+            ))
+            input_width = output_width
+        return layers
+
+    def _encode(self, inputs, layers):
+        output = inputs
+        for layer in layers:
+            output = self.dropout(self.relu(layer(output)))
+        return output
+
+    def forward(self, text_src_seq=None, eeg_src_seq=None):
+        if text_src_seq is not None and eeg_src_seq is None:
+            text = self._encode(text_src_seq, self.text_layers)
+            return self.text_classifier(text)
+        if text_src_seq is None and eeg_src_seq is not None:
+            eeg = self._encode(eeg_src_seq, self.eeg_layers)
+            return self.eeg_classifier(eeg)
+        if text_src_seq is not None and eeg_src_seq is not None:
+            text = self._encode(text_src_seq, self.text_layers)
+            eeg = self._encode(eeg_src_seq, self.eeg_layers)
+            return self.fusion_classifier(torch.cat((text, eeg), dim=1))
+        raise ValueError('ConfigurableMLP requires text, EEG, or both inputs')
     
     
     
@@ -494,6 +562,6 @@ class ResNet1D(nn.Module):
 
         if self.verbose:
             print('softmax', out.shape)
-        
+
         print(out.shape)
-        return out    
+        return out
