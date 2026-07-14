@@ -36,6 +36,9 @@ def get_args():
     parser.add_argument('--text_feature_len', type = int, default = 768)
     parser.add_argument('--eeg_feature_len', type = int, default = 832)
     parser.add_argument('--lr', type = float, default = 1e-5)
+    parser.add_argument('--optimizer_type', choices=['scheduled_adam', 'adam'],
+                        default='scheduled_adam',
+                        help='Use the released Transformer schedule or constant-LR Adam')
     parser.add_argument('--eps', type = float, default = 1e-4)
     parser.add_argument('--weight_decay', type = float, default = 1e-2)
     parser.add_argument('--warm_steps', type = int, default = 2000)
@@ -258,22 +261,35 @@ if __name__ == '__main__':
                     
                 model = model.to(device)
 
-                optimizer_metadata = {
-                    'optimizer': 'Adam',
-                    'betas': [0.9, 0.98],
-                    'eps': args.eps,
-                    'weight_decay': args.weight_decay,
-                    'schedule': 'Vaswani inverse-square-root with linear warmup',
-                    'schedule_d_model': d_model,
-                    'warmup_steps': args.warm_steps,
-                    'note': 'ScheduledOptim overwrites the Adam constructor learning rate each step',
-                }
+                adam = Adam(filter(lambda x: x.requires_grad, model.parameters()),
+                            betas=(0.9, 0.98), eps=args.eps, lr=args.lr,
+                            weight_decay=args.weight_decay)
+                if args.optimizer_type == 'scheduled_adam':
+                    optimizer_metadata = {
+                        'optimizer': 'Adam',
+                        'betas': [0.9, 0.98],
+                        'eps': args.eps,
+                        'weight_decay': args.weight_decay,
+                        'schedule': 'Vaswani inverse-square-root with linear warmup',
+                        'schedule_d_model': d_model,
+                        'warmup_steps': args.warm_steps,
+                        'note': ('ScheduledOptim overwrites the Adam constructor '
+                                 'learning rate each step'),
+                    }
+                    optimizer = ScheduledOptim(
+                        adam, d_model=d_model, n_warmup_steps=args.warm_steps
+                    )
+                else:
+                    optimizer_metadata = {
+                        'optimizer': 'Adam',
+                        'betas': [0.9, 0.98],
+                        'eps': args.eps,
+                        'weight_decay': args.weight_decay,
+                        'schedule': None,
+                        'constant_lr': args.lr,
+                    }
+                    optimizer = adam
                 print(f'effective optimizer: {optimizer_metadata}')
-                optimizer = ScheduledOptim(
-                    Adam(filter(lambda x: x.requires_grad, model.parameters()), 
-                         betas = (0.9, 0.98), eps = args.eps, lr = args.lr, weight_decay = args.weight_decay),
-                    d_model = d_model, n_warmup_steps = args.warm_steps
-                )
                 
                 all_train_loss, all_train_acc, all_val_loss, all_val_acc = [], [], [], []
                 all_pred_val, all_label_val = [], []

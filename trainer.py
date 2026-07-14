@@ -3,6 +3,15 @@ from sklearn.metrics import confusion_matrix
 
 from loss import cal_loss
 
+
+def _step_optimizer(optimizer):
+    """Support both the repo's scheduled wrapper and a standard PyTorch optimizer."""
+    if hasattr(optimizer, 'step_and_update_lr'):
+        optimizer.step_and_update_lr()
+    else:
+        optimizer.step()
+
+
 def train(train_loader, device, model, optimizer, total_num, args):
     all_labels = []
     all_res = []
@@ -29,7 +38,7 @@ def train(train_loader, device, model, optimizer, total_num, args):
             loss, n_correct = cal_loss(label, args, pred = pred_eeg)
             all_pred.extend(pred_eeg.cpu().detach().numpy())
             loss.backward()
-            optimizer.step_and_update_lr()
+            _step_optimizer(optimizer)
 
             total_loss += loss.item()
             total_correct += n_correct
@@ -42,7 +51,7 @@ def train(train_loader, device, model, optimizer, total_num, args):
             loss, n_correct = cal_loss(label, args, pred = pred_text)
             all_pred.extend(pred_text.cpu().detach().numpy())
             loss.backward()
-            optimizer.step_and_update_lr()
+            _step_optimizer(optimizer)
 
             total_loss += loss.item()
             total_correct += n_correct
@@ -55,7 +64,7 @@ def train(train_loader, device, model, optimizer, total_num, args):
             loss, n_correct = cal_loss(label, args, pred = pred, text_embed = text_embed, eeg_embed = eeg_embed)
             all_pred.extend(pred.cpu().detach().numpy())
             loss.backward()
-            optimizer.step_and_update_lr()
+            _step_optimizer(optimizer)
 
             total_loss += loss.item()
             total_correct += n_correct
@@ -67,7 +76,7 @@ def train(train_loader, device, model, optimizer, total_num, args):
             loss, n_correct = cal_loss(label, args, pred = pred, text_embed = text_embed, eeg_embed = eeg_embed)
             all_pred.extend(pred.cpu().detach().numpy())
             loss.backward()
-            optimizer.step_and_update_lr()
+            _step_optimizer(optimizer)
 
             total_loss += loss.item()
             total_correct += n_correct
@@ -79,7 +88,7 @@ def train(train_loader, device, model, optimizer, total_num, args):
             loss, n_correct = cal_loss(label, args, pred = pred)
             all_pred.extend(pred.cpu().detach().numpy())
             loss.backward()
-            optimizer.step_and_update_lr()
+            _step_optimizer(optimizer)
 
             total_loss += loss.item()
             total_correct += n_correct
@@ -88,4 +97,3 @@ def train(train_loader, device, model, optimizer, total_num, args):
     train_loss = total_loss / total_num
     train_acc = total_correct / total_num
     return train_loss, train_acc, cm, all_pred, all_labels
-
