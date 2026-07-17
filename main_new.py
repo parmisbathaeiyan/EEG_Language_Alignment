@@ -68,6 +68,11 @@ def get_args():
     parser.add_argument('--patience', type = int, default = 20, help = 'Early-stopping patience (epochs)')
     parser.add_argument('--es_delta', type = float, default = 0.01, help = 'Early-stopping min-improvement delta')
     parser.add_argument('--oversample', type = int, default = 0, help = 'Balance classes per batch via WeightedRandomSampler (paper App C.3); 1 to enable (off by default = faithful upstream)')
+    parser.add_argument(
+        '--sanity_overfit_per_class', type=int, default=0,
+        help=('Diagnostic only: use N seeded training samples per class as the '
+              'train/validation/test set to test whether the model can memorize')
+    )
     parser.add_argument('--eeg_cache', type = str, default = None, help = 'Path to cache the processed eeg_dict (skips slow .mat parsing on reruns)')
     # Logging infra (no effect on the learning procedure).
     parser.add_argument('--timestamp', type = str, default = None)
@@ -164,10 +169,66 @@ if __name__ == '__main__':
                         'class_counts': np.bincount(labels, minlength=class_num).tolist(),
                     }
 
+                original_split_metadata = {
+                    'train': _split_summary(train_set),
+                    'validation': _split_summary(val_set),
+                    'test': _split_summary(test_set),
+                }
+                diagnostic_metadata = None
+
+                if args.sanity_overfit_per_class:
+                    per_class = args.sanity_overfit_per_class
+                    if per_class < 1:
+                        raise ValueError('sanity_overfit_per_class must be >= 1')
+
+                    selected_indices = []
+                    selected_counts = np.zeros(class_num, dtype=int)
+                    for idx in range(len(train_set)):
+                        label = int(train_set[idx]['label'])
+                        if selected_counts[label] < per_class:
+                            selected_indices.append(idx)
+                            selected_counts[label] += 1
+
+                    if np.any(selected_counts != per_class):
+                        raise ValueError(
+                            'Not enough training samples for overfit sanity test: '
+                            f'requested {per_class} per class, found '
+                            f'{selected_counts.tolist()}'
+                        )
+
+                    sanity_records = [
+                        train_set[idx] for idx in selected_indices
+                    ]
+                    train_set = {
+                        idx: item for idx, item in enumerate(sanity_records)
+                    }
+                    # Intentionally evaluate on the identical examples. This is
+                    # a memorization test, never a held-out performance estimate.
+                    val_set = dict(train_set)
+                    test_set = dict(train_set)
+                    diagnostic_metadata = {
+                        'type': 'tiny_balanced_memorization',
+                        'scientific_test_result': False,
+                        'samples_per_class': per_class,
+                        'source': 'seeded training split only',
+                        'selected_source_train_indices': selected_indices,
+                        'evaluation_role': (
+                            'validation and test are aliases of the training '
+                            'subset; metrics measure memorization only'
+                        ),
+                    }
+                    print(
+                        'SANITY OVERFIT MODE: using the same balanced '
+                        f'{len(train_set)} examples for train/validation/test. '
+                        'These are NOT held-out test metrics.'
+                    )
+
                 split_metadata = {
                     'train': _split_summary(train_set),
                     'validation': _split_summary(val_set),
                     'test': _split_summary(test_set),
+                    'original_before_diagnostic': original_split_metadata,
+                    'diagnostic': diagnostic_metadata,
                 }
                 print(f'data splits: {split_metadata}')
                 
@@ -389,6 +450,7 @@ if __name__ == '__main__':
                             'effective_model' : effective_model_config,
                             'effective_optimizer': optimizer_metadata,
                             'data_splits'     : split_metadata,
+                            'diagnostic'       : diagnostic_metadata,
                             'runtime'         : {
                                 'python': platform.python_version(),
                                 'torch': torch.__version__,
