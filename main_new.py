@@ -392,6 +392,22 @@ if __name__ == '__main__':
                 all_pred_val, all_label_val = [], []
                 eva_indices = []
                 all_epochs  = []
+                _checkpoint_stem = os.path.join(
+                    'baselines',
+                    f'{args.model}_{args.modality}_{args.level}_'
+                    f'{args.num_layers}_{args.num_heads}_{args.batch_size}_'
+                    f'{args.loss}_{args.ce_weight}_{args.cca_weight}_'
+                    f'{args.wd_weight}'
+                )
+                _min_loss_checkpoint_path = (
+                    f'{_checkpoint_stem}_min_val_loss.chkpt'
+                )
+                _max_acc_checkpoint_path = (
+                    f'{_checkpoint_stem}_max_val_acc.chkpt'
+                )
+                _checkpoint_best_loss = float('inf')
+                _checkpoint_best_acc = float('-inf')
+                _checkpoint_best_acc_loss = float('inf')
                 if args.inference == 1:
                     chkpt_path = os.path.join('baselines', args.checkpoint)
                     print(chkpt_path)
@@ -414,7 +430,9 @@ if __name__ == '__main__':
                         checkpoint = {
                             'model' : model_state_dict,
                             'config_file' : 'config',
-                            'epoch' : epoch
+                            'epoch' : epoch,
+                            'validation_loss': float(val_loss),
+                            'validation_accuracy': float(val_acc),
                         }
                     
                         all_pred_val.extend(val_preds)
@@ -426,9 +444,34 @@ if __name__ == '__main__':
                         all_epochs.append(epoch)
                         
                         
-                        if val_loss <= min(all_val_loss):
-                                torch.save(checkpoint, f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt')
-                                print('    - [Info] The checkpoint file has been updated.')
+                        if val_loss <= _checkpoint_best_loss:
+                            _checkpoint_best_loss = float(val_loss)
+                            torch.save(
+                                checkpoint, _min_loss_checkpoint_path
+                            )
+                            print(
+                                '    - [Info] Minimum-validation-loss '
+                                'checkpoint updated.'
+                            )
+
+                        # Save the highest-accuracy validation checkpoint too.
+                        # If accuracy ties, prefer the lower validation loss.
+                        if (
+                            val_acc > _checkpoint_best_acc
+                            or (
+                                val_acc == _checkpoint_best_acc
+                                and val_loss < _checkpoint_best_acc_loss
+                            )
+                        ):
+                            _checkpoint_best_acc = float(val_acc)
+                            _checkpoint_best_acc_loss = float(val_loss)
+                            torch.save(
+                                checkpoint, _max_acc_checkpoint_path
+                            )
+                            print(
+                                '    - [Info] Maximum-validation-accuracy '
+                                'checkpoint updated.'
+                            )
                             
                         early_stop = early_stopping(all_val_loss, patience = args.patience, delta = args.es_delta)
                         
@@ -442,43 +485,77 @@ if __name__ == '__main__':
                         _plot_src = f'lr_curves/learning_curve_{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}.png'
                         if os.path.exists(_plot_src):
                             _shutil.copy(_plot_src, args.plot_dst)
-                    checkpoint = torch.load(f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt', map_location = args.device)
-                    model.load_state_dict(checkpoint['model'])
-                    model = model.to(device)
-                    (
-                        _selected_val_loss,
-                        _selected_val_acc,
-                        _selected_val_cm,
-                        _selected_val_preds,
-                        _selected_val_labels,
-                    ) = eval(
-                        val_loader, device, model,
-                        val_dataset.__len__(), args
+                    def _evaluate_checkpoint(
+                        checkpoint_path, criterion, display_name
+                    ):
+                        saved_checkpoint = torch.load(
+                            checkpoint_path, map_location=args.device
+                        )
+                        model.load_state_dict(saved_checkpoint['model'])
+                        evaluated_model = model.to(device)
+                        (
+                            checkpoint_val_loss,
+                            checkpoint_val_acc,
+                            checkpoint_val_cm,
+                            _checkpoint_val_preds,
+                            _checkpoint_val_labels,
+                        ) = eval(
+                            val_loader, device, evaluated_model,
+                            val_dataset.__len__(), args
+                        )
+                        checkpoint_val_metrics = classification_metrics(
+                            checkpoint_val_cm, SA_CLASS_NAMES
+                        )
+                        checkpoint_val_metrics.update({
+                            'loss': float(checkpoint_val_loss),
+                            'checkpoint_epoch': int(
+                                saved_checkpoint['epoch']
+                            ),
+                            'selection_criterion': criterion,
+                        })
+                        print(
+                            f'\n===== {display_name} VALIDATION ====='
+                        )
+                        print(format_confusion_matrix(
+                            checkpoint_val_cm, SA_CLASS_NAMES
+                        ))
+                        print(
+                            f'Accuracy: {checkpoint_val_acc:.4f}   '
+                            f'Macro F1: '
+                            f'{checkpoint_val_metrics["f1_macro"]:.4f}   '
+                            f'Loss: {checkpoint_val_loss:.6f}'
+                        )
+                        print('=' * (23 + len(display_name)) + '\n')
+                        checkpoint_test_metrics = inference(
+                            test_loader, device, evaluated_model,
+                            test_dataset.__len__(), args
+                        )
+                        return {
+                            'validation': checkpoint_val_metrics,
+                            'test': checkpoint_test_metrics,
+                        }
+
+                    _min_loss_evaluation = _evaluate_checkpoint(
+                        _min_loss_checkpoint_path,
+                        'minimum validation loss',
+                        'MINIMUM-LOSS CHECKPOINT',
                     )
-                    _selected_val_metrics = classification_metrics(
-                        _selected_val_cm, SA_CLASS_NAMES
+                    _max_acc_evaluation = _evaluate_checkpoint(
+                        _max_acc_checkpoint_path,
+                        (
+                            'maximum validation accuracy; ties resolved by '
+                            'lower validation loss'
+                        ),
+                        'MAXIMUM-ACCURACY CHECKPOINT',
                     )
-                    _selected_val_metrics.update({
-                        'loss': float(_selected_val_loss),
-                        'checkpoint_epoch': int(checkpoint['epoch']),
-                        'selection_criterion': 'minimum validation loss',
-                    })
-                    print('\n===== SELECTED-CHECKPOINT VALIDATION =====')
-                    print(format_confusion_matrix(
-                        _selected_val_cm, SA_CLASS_NAMES
-                    ))
-                    print(
-                        f'Accuracy: {_selected_val_acc:.4f}   '
-                        f'Macro F1: '
-                        f'{_selected_val_metrics["f1_macro"]:.4f}   '
-                        f'Loss: {_selected_val_loss:.6f}'
-                    )
-                    print('==========================================\n')
-                    _test_metrics = inference(test_loader, device, model, test_dataset.__len__(), args)
+                    # Compatibility fields retain minimum-validation-loss as
+                    # the predeclared primary checkpoint. Never select between
+                    # the two checkpoints using their test performance.
+                    _selected_val_metrics = _min_loss_evaluation['validation']
+                    _test_metrics = _min_loss_evaluation['test']
 
                     if args.json_path:
                         _max_val_acc = max(all_val_acc)
-                        _max_val_acc_index = all_val_acc.index(_max_val_acc)
                         _results = {
                             'run_name'        : os.path.basename(args.json_path),
                             'timestamp'       : args.timestamp,
@@ -501,13 +578,33 @@ if __name__ == '__main__':
                             # the maximum at any epoch, not necessarily the
                             # checkpoint selected by minimum validation loss.
                             'best_val_acc'    : float(_max_val_acc),
-                            'best_val_epoch'  : int(all_epochs[all_val_loss.index(min(all_val_loss))]),
+                            'best_val_epoch'  : int(
+                                _selected_val_metrics['checkpoint_epoch']
+                            ),
                             'epochwise_max_validation_accuracy': {
                                 'accuracy': float(_max_val_acc),
-                                'epoch': int(all_epochs[_max_val_acc_index]),
+                                'epoch': int(
+                                    _max_acc_evaluation[
+                                        'validation'
+                                    ]['checkpoint_epoch']
+                                ),
+                                'tie_break': 'lower validation loss',
                             },
                             'selected_checkpoint_validation':
                                 _selected_val_metrics,
+                            'checkpoint_evaluations': {
+                                'primary_minimum_validation_loss':
+                                    _min_loss_evaluation,
+                                'secondary_maximum_validation_accuracy':
+                                    _max_acc_evaluation,
+                                'interpretation': (
+                                    'Primary result remains the predeclared '
+                                    'minimum-validation-loss checkpoint. The '
+                                    'maximum-accuracy checkpoint is a secondary '
+                                    'diagnostic; never choose between them '
+                                    'using test performance.'
+                                ),
+                            },
                             'test'            : _test_metrics,
                             'per_epoch'       : [
                                 {'epoch': int(all_epochs[i]),
