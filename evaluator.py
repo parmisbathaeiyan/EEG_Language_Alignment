@@ -10,6 +10,30 @@ import numpy as np
 SA_CLASS_NAMES = ['neutral', 'positive', 'negative']
 
 
+def classification_metrics(cm, class_names=None):
+    """Return serializable metrics for a confusion matrix."""
+    acc, precision, recall, f1 = cal_statistic(cm)
+    names = (
+        class_names
+        if class_names and len(class_names) == len(precision)
+        else [str(i) for i in range(len(precision))]
+    )
+    return {
+        'accuracy': float(acc),
+        'precision_macro': float(np.mean(precision)),
+        'recall_macro': float(np.mean(recall)),
+        'f1_macro': float(np.mean(f1)),
+        'precision_per_class': [float(x) for x in precision],
+        'recall_per_class': [float(x) for x in recall],
+        'f1_per_class': [float(x) for x in f1],
+        'class_names': names,
+        'confusion_matrix': cm.tolist(),
+        'confusion_matrix_layout': 'rows=true, cols=pred',
+        'predicted_class_counts': cm.sum(axis=0).astype(int).tolist(),
+        'true_class_counts': cm.sum(axis=1).astype(int).tolist(),
+    }
+
+
 def format_confusion_matrix(cm, class_names=None):
     """Pretty-print a confusion matrix with rows = TRUE, cols = PREDICTED."""
     n = cm.shape[0]
@@ -163,30 +187,28 @@ def inference(test_loader, device, model, total_num, args):
     np.savetxt(f'pred_labels/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_all_label.txt', all_labels)
     all_pred = np.array(all_pred)
     cm = confusion_matrix(all_labels, all_res)
-    acc_SP, pre_i, rec_i, F1_i = cal_statistic(cm)
+    metrics = classification_metrics(cm, SA_CLASS_NAMES)
     test_acc = total_correct / total_num
-    macro_p, macro_r, macro_f1 = float(np.mean(pre_i)), float(np.mean(rec_i)), float(np.mean(F1_i))
 
     print('\n===== TEST RESULTS =====')
     print(format_confusion_matrix(cm, SA_CLASS_NAMES))
-    names = SA_CLASS_NAMES if len(SA_CLASS_NAMES) == len(pre_i) else [str(i) for i in range(len(pre_i))]
+    names = metrics['class_names']
     print('\nPer-class metrics:')
     print(f'  {"class":<10}{"precision":>11}{"recall":>11}{"f1":>11}')
     for i, nm in enumerate(names):
-        print(f'  {nm:<10}{pre_i[i]:>11.4f}{rec_i[i]:>11.4f}{F1_i[i]:>11.4f}')
-    print(f'\nMacro-avg   precision: {macro_p:.4f}   recall: {macro_r:.4f}   F1: {macro_f1:.4f}')
+        print(
+            f'  {nm:<10}'
+            f'{metrics["precision_per_class"][i]:>11.4f}'
+            f'{metrics["recall_per_class"][i]:>11.4f}'
+            f'{metrics["f1_per_class"][i]:>11.4f}'
+        )
+    print(
+        f'\nMacro-avg   precision: {metrics["precision_macro"]:.4f}   '
+        f'recall: {metrics["recall_macro"]:.4f}   '
+        f'F1: {metrics["f1_macro"]:.4f}'
+    )
     print(f'Overall accuracy     : {test_acc:.4f}')
     print('========================\n')
 
-    return {
-        'test_acc'           : float(test_acc),   # overall accuracy (== acc_SP)
-        'precision_macro'    : macro_p,
-        'recall_macro'       : macro_r,
-        'f1_macro'           : macro_f1,
-        'precision_per_class': [float(x) for x in pre_i],
-        'recall_per_class'   : [float(x) for x in rec_i],
-        'f1_per_class'       : [float(x) for x in F1_i],
-        'class_names'        : names,
-        'confusion_matrix'   : cm.tolist(),
-        'confusion_matrix_layout': 'rows=true, cols=pred',
-    }
+    # Retain the historical ``test_acc`` key for existing result consumers.
+    return {'test_acc': float(test_acc), **metrics}

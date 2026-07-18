@@ -18,7 +18,13 @@ from transformers import BertModel, BertTokenizer
 from config import EEG_LEN, TEXT_LEN, d_model, d_inner, d_k, d_v, class_num, dropout
 from optim_new import ScheduledOptim, early_stopping
 from trainer import train
-from evaluator import eval, inference
+from evaluator import (
+    SA_CLASS_NAMES,
+    classification_metrics,
+    eval,
+    format_confusion_matrix,
+    inference,
+)
 from model_new import ConfigurableMLP, MLP, Transformer
 from utils import open_file
 from new_plot import plot_learning_curve
@@ -439,9 +445,40 @@ if __name__ == '__main__':
                     checkpoint = torch.load(f'baselines/{args.model}_{args.modality}_{args.level}_{args.num_layers}_{args.num_heads}_{args.batch_size}_{args.loss}_{args.ce_weight}_{args.cca_weight}_{args.wd_weight}.chkpt', map_location = args.device)
                     model.load_state_dict(checkpoint['model'])
                     model = model.to(device)
+                    (
+                        _selected_val_loss,
+                        _selected_val_acc,
+                        _selected_val_cm,
+                        _selected_val_preds,
+                        _selected_val_labels,
+                    ) = eval(
+                        val_loader, device, model,
+                        val_dataset.__len__(), args
+                    )
+                    _selected_val_metrics = classification_metrics(
+                        _selected_val_cm, SA_CLASS_NAMES
+                    )
+                    _selected_val_metrics.update({
+                        'loss': float(_selected_val_loss),
+                        'checkpoint_epoch': int(checkpoint['epoch']),
+                        'selection_criterion': 'minimum validation loss',
+                    })
+                    print('\n===== SELECTED-CHECKPOINT VALIDATION =====')
+                    print(format_confusion_matrix(
+                        _selected_val_cm, SA_CLASS_NAMES
+                    ))
+                    print(
+                        f'Accuracy: {_selected_val_acc:.4f}   '
+                        f'Macro F1: '
+                        f'{_selected_val_metrics["f1_macro"]:.4f}   '
+                        f'Loss: {_selected_val_loss:.6f}'
+                    )
+                    print('==========================================\n')
                     _test_metrics = inference(test_loader, device, model, test_dataset.__len__(), args)
 
                     if args.json_path:
+                        _max_val_acc = max(all_val_acc)
+                        _max_val_acc_index = all_val_acc.index(_max_val_acc)
                         _results = {
                             'run_name'        : os.path.basename(args.json_path),
                             'timestamp'       : args.timestamp,
@@ -460,8 +497,17 @@ if __name__ == '__main__':
                             },
                             'total_epochs_run': len(all_epochs),
                             'best_val_loss'   : float(min(all_val_loss)),
-                            'best_val_acc'    : float(max(all_val_acc)),
+                            # Historical key retained for compatibility. This is
+                            # the maximum at any epoch, not necessarily the
+                            # checkpoint selected by minimum validation loss.
+                            'best_val_acc'    : float(_max_val_acc),
                             'best_val_epoch'  : int(all_epochs[all_val_loss.index(min(all_val_loss))]),
+                            'epochwise_max_validation_accuracy': {
+                                'accuracy': float(_max_val_acc),
+                                'epoch': int(all_epochs[_max_val_acc_index]),
+                            },
+                            'selected_checkpoint_validation':
+                                _selected_val_metrics,
                             'test'            : _test_metrics,
                             'per_epoch'       : [
                                 {'epoch': int(all_epochs[i]),
