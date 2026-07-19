@@ -9,9 +9,8 @@ import scipy.io as io
 import math
 from tqdm import tqdm
 from scipy.stats import zscore
-import random
 from transformers import BertModel, BertTokenizer, BertForSequenceClassification
-from collections import defaultdict
+from split_utils import split_eeg_dict
 
 
 class resnet_Text_EEGDataset(Dataset):
@@ -313,35 +312,17 @@ def clean_dic(eeg_dict):
   
   return new_dict, id_mapping
 
-def shuffle_split_data(eeg_dict):
-    label_keys = defaultdict(list)
-    for key, value in eeg_dict.items():
-        label = value['label']  
-        label_keys[label].append(key)
+def shuffle_split_data(eeg_dict, seed=42, return_manifest=False):
+    """Canonical stratified 80/10/remainder sentence split.
 
-    for label in label_keys:
-        random.shuffle(label_keys[label])
-
-    # Paper uses an 80/10/10 train/val/test split (Hollenstein et al. 2021); the
-    # upstream code used 60/10/30. val/test get the remainder (~10% each).
-    label_counts = {label: len(label_keys[label]) for label in label_keys}
-    train_proportion = {label: int(0.8 * count) for label, count in label_counts.items()}
-    val_proportion = {label: int(0.10 * count) for label, count in label_counts.items()}
-
-    train_data = {}
-    val_data = {}
-    test_data = {}
-
-    for label in label_keys:
-        keys = label_keys[label]
-        for i, key in tqdm(enumerate(keys), desc=f'Splitting Dictionary (Label: {label})'):
-            value = eeg_dict[key]
-            if i < train_proportion[label]:
-                train_data[key] = value
-            elif train_proportion[label] <= i < train_proportion[label] + val_proportion[label]:
-                val_data[key] = value
-            else:
-                test_data[key] = value
-
+    The historical function name is retained for compatibility. Unlike the
+    released implementation, the result does not depend on dictionary or
+    filesystem iteration order.
+    """
+    train_data, val_data, test_data, manifest = split_eeg_dict(
+        eeg_dict, seed
+    )
+    if return_manifest:
+        return train_data, val_data, test_data, manifest
     return train_data, val_data, test_data
   

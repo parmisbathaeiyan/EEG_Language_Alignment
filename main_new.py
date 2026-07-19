@@ -95,8 +95,8 @@ if __name__ == '__main__':
     device = torch.device(args.device)
     print(device)
 
-    # Seed all RNGs before any randomness (the train/val/test split in
-    # shuffle_split_data uses Python's random; model init/shuffling use torch).
+    # Seed model initialization and training randomness. The data splitter uses
+    # its own local RNG and is deterministic from the sentence IDs plus seed.
     random.seed(args.seed)
     np.random.seed(args.seed)
     torch.manual_seed(args.seed)
@@ -159,26 +159,49 @@ if __name__ == '__main__':
                             pickle.dump(eeg_dict, _cf)
                         print(f'Cached eeg_dict -> {args.eeg_cache}')
                 
-                eeg_train_split, eeg_val_split, eeg_test_split = shuffle_split_data(eeg_dict)
+                (
+                    eeg_train_split,
+                    eeg_val_split,
+                    eeg_test_split,
+                    split_manifest,
+                ) = shuffle_split_data(
+                    eeg_dict, seed=args.seed, return_manifest=True
+                )
                 
                 train_set, train_id_mapping = clean_dic(eeg_train_split)
                 val_set, val_id_mapping = clean_dic(eeg_val_split)
                 test_set, test_id_mapping = clean_dic(eeg_test_split)
 
-                def _split_summary(items):
+                def _split_summary(items, original_ids=None):
                     # clean_dic returns {integer_index: sample_dict}; iterating a
                     # dict directly yields the integer keys, not the samples.
                     records = items.values() if isinstance(items, dict) else items
                     labels = [int(item['label']) for item in records]
-                    return {
+                    summary = {
                         'size': len(items),
                         'class_counts': np.bincount(labels, minlength=class_num).tolist(),
                     }
+                    if original_ids is not None:
+                        summary['sentence_ids'] = [
+                            value.item()
+                            if hasattr(value, 'item') else value
+                            for value in original_ids
+                        ]
+                    return summary
 
                 original_split_metadata = {
-                    'train': _split_summary(train_set),
-                    'validation': _split_summary(val_set),
-                    'test': _split_summary(test_set),
+                    'algorithm': split_manifest['algorithm'],
+                    'seed': split_manifest['seed'],
+                    'train': _split_summary(
+                        train_set, split_manifest['split_ids']['train']
+                    ),
+                    'validation': _split_summary(
+                        val_set,
+                        split_manifest['split_ids']['validation'],
+                    ),
+                    'test': _split_summary(
+                        test_set, split_manifest['split_ids']['test']
+                    ),
                 }
                 diagnostic_metadata = None
 

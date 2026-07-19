@@ -11,12 +11,12 @@ import json
 import os
 import pickle
 import platform
-import random
 import subprocess
-from collections import defaultdict
 from types import SimpleNamespace
 
 import numpy as np
+
+from split_utils import split_eeg_dict
 
 
 BANDS = ('t1', 't2', 'a1', 'a2', 'b1', 'b2', 'g1', 'g2')
@@ -57,41 +57,6 @@ def load_or_build_eeg_dict(args):
     with open(args.eeg_cache, 'wb') as cache_file:
         pickle.dump(eeg_dict, cache_file)
     return eeg_dict, 'built from raw .mat files'
-
-
-def shuffle_split_data(eeg_dict):
-    """Match the seeded, stratified 80/10/remainder split in dataset_new.py."""
-    label_keys = defaultdict(list)
-    for key, value in eeg_dict.items():
-        label_keys[value['label']].append(key)
-
-    for label in label_keys:
-        random.shuffle(label_keys[label])
-
-    label_counts = {
-        label: len(keys) for label, keys in label_keys.items()
-    }
-    train_counts = {
-        label: int(0.8 * count)
-        for label, count in label_counts.items()
-    }
-    validation_counts = {
-        label: int(0.10 * count)
-        for label, count in label_counts.items()
-    }
-
-    train_data = {}
-    validation_data = {}
-    test_data = {}
-    for label, keys in label_keys.items():
-        for index, key in enumerate(keys):
-            if index < train_counts[label]:
-                train_data[key] = eeg_dict[key]
-            elif index < train_counts[label] + validation_counts[label]:
-                validation_data[key] = eeg_dict[key]
-            else:
-                test_data[key] = eeg_dict[key]
-    return train_data, validation_data, test_data
 
 
 def feature_vector(item):
@@ -344,11 +309,15 @@ def simple_baselines(split_data):
 
 def main():
     args = get_args()
-    random.seed(args.seed)
     np.random.seed(args.seed)
 
     eeg_dict, cache_source = load_or_build_eeg_dict(args)
-    train_split, validation_split, test_split = shuffle_split_data(eeg_dict)
+    (
+        train_split,
+        validation_split,
+        test_split,
+        split_manifest,
+    ) = split_eeg_dict(eeg_dict, args.seed)
     split_objects = {
         'train': train_split,
         'validation': validation_split,
@@ -380,6 +349,7 @@ def main():
         'scientific_model_result': False,
         'code_commit': git_commit,
         'seed': args.seed,
+        'split_algorithm': split_manifest['algorithm'],
         'cache_source': cache_source,
         'construction_observations_from_released_code': {
             'unit_before_split': 'one vector per sentence_id',
@@ -408,6 +378,10 @@ def main():
         'splits': {
             name: {
                 'size': len(ids),
+                'sentence_ids': [
+                    value.item() if hasattr(value, 'item') else value
+                    for value in ids
+                ],
                 'class_counts': np.bincount(
                     labels, minlength=CLASS_NUM
                 ).astype(int).tolist(),

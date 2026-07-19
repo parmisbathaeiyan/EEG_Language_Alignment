@@ -11,7 +11,6 @@ import json
 import os
 import pickle
 import platform
-import random
 import subprocess
 from collections import defaultdict
 
@@ -27,6 +26,7 @@ from audit_eeg_features import (
     metric_summary,
     squared_distances,
 )
+from split_utils import canonical_stratified_sentence_split
 
 
 ELECTRODES_PER_BAND = 104
@@ -206,31 +206,14 @@ def sentence_group_split(records, seed):
             )
         sentence_labels[sentence_id] = label
 
-    rng = random.Random(seed)
-    label_sentence_ids = defaultdict(list)
-    for sentence_id, label in sentence_labels.items():
-        label_sentence_ids[label].append(sentence_id)
-    for label in label_sentence_ids:
-        rng.shuffle(label_sentence_ids[label])
-
-    sentence_split = {}
+    manifest = canonical_stratified_sentence_split(
+        sentence_labels, seed
+    )
+    sentence_split = manifest['assignments']
     split_sentence_ids = {
-        'train': set(),
-        'validation': set(),
-        'test': set(),
+        split: set(manifest['split_ids'][split])
+        for split in ('train', 'validation', 'test')
     }
-    for label, ids in label_sentence_ids.items():
-        train_count = int(0.8 * len(ids))
-        validation_count = int(0.10 * len(ids))
-        for index, sentence_id in enumerate(ids):
-            if index < train_count:
-                split = 'train'
-            elif index < train_count + validation_count:
-                split = 'validation'
-            else:
-                split = 'test'
-            sentence_split[sentence_id] = split
-            split_sentence_ids[split].add(sentence_id)
 
     split_indices = {}
     for split in ('train', 'validation', 'test'):
@@ -239,7 +222,7 @@ def sentence_group_split(records, seed):
             if sentence_split[record['sentence_id']] == split
         ], dtype=np.int64)
 
-    return sentence_split, split_sentence_ids, split_indices
+    return sentence_split, split_sentence_ids, split_indices, manifest
 
 
 def records_to_arrays(records):
@@ -853,7 +836,6 @@ def count_summary(values):
 
 def main():
     args = get_args()
-    random.seed(args.seed)
     np.random.seed(args.seed)
 
     records, raw_file_metadata = load_subject_records(
@@ -876,6 +858,7 @@ def main():
         sentence_split,
         split_sentence_ids,
         split_indices,
+        split_manifest,
     ) = sentence_group_split(records, args.seed)
 
     variants, normalization_metadata = normalization_variants(
@@ -964,6 +947,7 @@ def main():
         'split_policy': {
             'unit': 'sentence_id',
             'stratified_proportions': '80/10/remainder',
+            'algorithm': split_manifest['algorithm'],
             'sentence_leakage_prevented': True,
             'note': (
                 'All subject recordings for one sentence are assigned to '
