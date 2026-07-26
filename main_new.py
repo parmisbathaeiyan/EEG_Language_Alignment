@@ -70,7 +70,14 @@ def get_args():
     parser.add_argument('--ce_weight', type = float, default = 1, help = 'Please choose the ce loss weight')
     parser.add_argument('--cca_weight', type = float, default = 1, help = 'Please choose the cca loss weight')
     parser.add_argument('--wd_weight', type = float, default = 1, help = 'Please choose the wd loss weight')
-    parser.add_argument('--seed', type = int, default = 42, help = 'Global RNG seed for reproducible split/init')
+    parser.add_argument('--seed', type = int, default = 42,
+                        help = 'Backward-compatible seed used when a specific split/model/sampler seed is omitted')
+    parser.add_argument('--split_seed', type=int, default=None,
+                        help='Data-split RNG seed; defaults to --seed')
+    parser.add_argument('--model_seed', type=int, default=None,
+                        help='Model initialization/dropout RNG seed; defaults to --seed')
+    parser.add_argument('--sampler_seed', type=int, default=None,
+                        help='Training sampler/shuffle RNG seed; defaults to --model_seed')
     parser.add_argument('--patience', type = int, default = 20, help = 'Early-stopping patience (epochs)')
     parser.add_argument('--es_delta', type = float, default = 0.01, help = 'Early-stopping min-improvement delta')
     parser.add_argument('--oversample', type = int, default = 0, help = 'Balance classes per batch via WeightedRandomSampler (paper App C.3); 1 to enable (off by default = faithful upstream)')
@@ -95,13 +102,42 @@ if __name__ == '__main__':
     device = torch.device(args.device)
     print(device)
 
-    # Seed model initialization and training randomness. The data splitter uses
-    # its own local RNG and is deterministic from the sentence IDs plus seed.
-    random.seed(args.seed)
-    np.random.seed(args.seed)
-    torch.manual_seed(args.seed)
+    effective_split_seed = (
+        args.seed if args.split_seed is None else args.split_seed
+    )
+    effective_model_seed = (
+        args.seed if args.model_seed is None else args.model_seed
+    )
+    effective_sampler_seed = (
+        effective_model_seed
+        if args.sampler_seed is None else args.sampler_seed
+    )
+    effective_seeds = {
+        'legacy_fallback_seed': int(args.seed),
+        'split_seed': int(effective_split_seed),
+        'model_seed': int(effective_model_seed),
+        'sampler_seed': int(effective_sampler_seed),
+        'model_seed_controls': [
+            'Python random', 'NumPy global RNG',
+            'PyTorch model initialization and dropout',
+        ],
+        'sampler_seed_controls': (
+            'WeightedRandomSampler draws or shuffled DataLoader order'
+        ),
+        'determinism_note': (
+            'All experiment RNG streams are explicitly seeded, but PyTorch '
+            'bitwise-deterministic CUDA algorithms are not forced'
+        ),
+    }
+    print(f'effective random seeds: {effective_seeds}')
+
+    # Split construction uses its own local RNG. Model initialization/dropout
+    # and training sampling are seeded separately for the v17 crossed design.
+    random.seed(effective_model_seed)
+    np.random.seed(effective_model_seed)
+    torch.manual_seed(effective_model_seed)
     if torch.cuda.is_available():
-        torch.cuda.manual_seed_all(args.seed)
+        torch.cuda.manual_seed_all(effective_model_seed)
 
     try:
         git_commit = subprocess.check_output(
@@ -149,14 +185,28 @@ if __name__ == '__main__':
                 eeg_dict = None
                 if args.eeg_cache and args.dev == 0 and os.path.exists(args.eeg_cache):
                     print(f'Loading cached eeg_dict from {args.eeg_cache}')
-                    with open(args.eeg_cache, 'rb') as _cf:
-                        eeg_dict = pickle.load(_cf)
-                    print(f'  -> {len(eeg_dict)} sentences from cache')
+                    try:
+                        with open(args.eeg_cache, 'rb') as _cf:
+                            eeg_dict = pickle.load(_cf)
+                        print(f'  -> {len(eeg_dict)} sentences from cache')
+                    except (EOFError, pickle.UnpicklingError, OSError, ValueError) as exc:
+                        # A disconnected Colab session can leave a partial Drive
+                        # cache. Preserve it for inspection and rebuild safely.
+                        _invalid_cache = (
+                            f'{args.eeg_cache}.invalid_{int(time.time())}'
+                        )
+                        print(
+                            f'Cache could not be loaded ({exc!r}); moving it '
+                            f'to {_invalid_cache} and rebuilding'
+                        )
+                        os.replace(args.eeg_cache, _invalid_cache)
                 if eeg_dict is None:
                     eeg_dict = prepare_sr_eeg_data(sr_eeg_data_path, sentence_list, labels_list, sentence_ids_list, args)
                     if args.eeg_cache and args.dev == 0:
-                        with open(args.eeg_cache, 'wb') as _cf:
+                        _temporary_cache = args.eeg_cache + '.tmp'
+                        with open(_temporary_cache, 'wb') as _cf:
                             pickle.dump(eeg_dict, _cf)
+                        os.replace(_temporary_cache, args.eeg_cache)
                         print(f'Cached eeg_dict -> {args.eeg_cache}')
                 
                 (
@@ -165,7 +215,8 @@ if __name__ == '__main__':
                     eeg_test_split,
                     split_manifest,
                 ) = shuffle_split_data(
-                    eeg_dict, seed=args.seed, return_manifest=True
+                    eeg_dict, seed=effective_split_seed,
+                    return_manifest=True
                 )
                 
                 train_set, train_id_mapping = clean_dic(eeg_train_split)
@@ -284,20 +335,47 @@ if __name__ == '__main__':
                     _class_count = np.bincount(_labels, minlength=class_num)
                     _class_w = 1.0 / np.maximum(_class_count, 1)
                     _sample_w = [float(_class_w[l]) for l in _labels]
-                    _sampler = WeightedRandomSampler(_sample_w, num_samples=len(train_dataset), replacement=True)
+                    _sampler_generator = torch.Generator()
+                    _sampler_generator.manual_seed(effective_sampler_seed)
+                    _loader_generator = torch.Generator()
+                    _loader_generator.manual_seed(effective_sampler_seed)
+                    _sampler = WeightedRandomSampler(
+                        _sample_w, num_samples=len(train_dataset),
+                        replacement=True, generator=_sampler_generator
+                    )
+                    sampling_metadata = {
+                        'method': 'WeightedRandomSampler',
+                        'replacement': True,
+                        'num_samples_per_epoch': len(train_dataset),
+                        'class_weights': _class_w.tolist(),
+                        'source_train_class_counts': _class_count.tolist(),
+                        'sampler_seed': int(effective_sampler_seed),
+                        'balance_interpretation': (
+                            'inverse-frequency sampling balances classes in '
+                            'expectation, not exactly within every batch'
+                        ),
+                    }
                     print(f'oversampling ON: train class counts {_class_count.tolist()} -> balanced batches')
                     train_loader = DataLoader(
                         dataset=train_dataset,
                         batch_size=args.batch_size,
                         sampler=_sampler,
-                        drop_last = _drop_last_train
+                        drop_last = _drop_last_train,
+                        generator=_loader_generator,
                     )
                 else:
+                    _loader_generator = torch.Generator()
+                    _loader_generator.manual_seed(effective_sampler_seed)
+                    sampling_metadata = {
+                        'method': 'DataLoader shuffle',
+                        'sampler_seed': int(effective_sampler_seed),
+                    }
                     train_loader = DataLoader(
                         dataset=train_dataset,
                         batch_size=args.batch_size,
                         shuffle=True,
-                        drop_last = _drop_last_train
+                        drop_last = _drop_last_train,
+                        generator=_loader_generator,
                     )
                 val_loader = DataLoader(
                     dataset=val_dataset,
@@ -313,10 +391,35 @@ if __name__ == '__main__':
                 
                 if args.modality == 'eeg':
                     effective_input_features = {'eeg': EEG_LEN}
+                    effective_input_representation = {
+                        'modality': 'eeg',
+                        'source_fields': [
+                            'mean_t1', 'mean_t2', 'mean_a1', 'mean_a2',
+                            'mean_b1', 'mean_b2', 'mean_g1', 'mean_g2',
+                        ],
+                        'stored_values_per_band': 105,
+                        'used_values_per_band': 104,
+                        'discarded_value': (
+                            '105th stored entry, before normalization'
+                        ),
+                        'participant_aggregation': (
+                            'mean of usable participant vectors per sentence'
+                        ),
+                        'participant_file_iteration_order': (
+                            'sorted filename order before float32 averaging'
+                        ),
+                        'normalization': (
+                            'scipy.stats.zscore separately across the 104 '
+                            'electrodes of each averaged sentence band'
+                        ),
+                        'concatenated_feature_width': EEG_LEN,
+                    }
                 elif args.modality == 'text':
                     effective_input_features = {'text': TEXT_LEN}
+                    effective_input_representation = None
                 else:
                     effective_input_features = {'eeg': EEG_LEN, 'text': TEXT_LEN}
+                    effective_input_representation = None
 
                 if args.model == 'transformer':
                     model = Transformer(device = device, d_feature_text = TEXT_LEN, d_feature_eeg = EEG_LEN,\
@@ -364,6 +467,9 @@ if __name__ == '__main__':
                         'input_features': effective_input_features,
                         'hidden_sizes': hidden_sizes,
                         'hidden_linear_layers': len(hidden_sizes),
+                        'total_linear_layers_including_output': (
+                            len(hidden_sizes) + 1
+                        ),
                         'linear_bias': bool(args.mlp_bias),
                         'dropout': args.dropout,
                         'num_classes': class_num,
@@ -586,6 +692,10 @@ if __name__ == '__main__':
                             'hyperparameters' : vars(args),
                             'effective_model' : effective_model_config,
                             'effective_optimizer': optimizer_metadata,
+                            'effective_random_seeds': effective_seeds,
+                            'training_sampling': sampling_metadata,
+                            'effective_input_representation':
+                                effective_input_representation,
                             'data_splits'     : split_metadata,
                             'diagnostic'       : diagnostic_metadata,
                             'runtime'         : {

@@ -84,7 +84,9 @@ def prepare_sr_eeg_data(sr_eeg_data_path, sentence_list, labels_list, sentence_i
   
   count = 0
   
-  for i in tqdm(os.listdir(sr_eeg_data_path), desc = 'Creating SR EEG dataset: '):
+  # Stable participant order makes the float32 cross-participant means
+  # reproducible across filesystems and Colab sessions.
+  for i in tqdm(sorted(os.listdir(sr_eeg_data_path)), desc = 'Creating SR EEG dataset: '):
       
       file_path = os.path.join(sr_eeg_data_path,i)
       
